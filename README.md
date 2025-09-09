@@ -1,62 +1,83 @@
-# AutoList — Doma Protocol (Track 1)
+# autolist-doma
 
-Minimal Next.js + TypeScript + Tailwind scaffold that wires Doma Subgraph querying into a UI, with API stubs for creating a Dutch auction listing and for settlement via a relayer.
+A real-time Dutch auction dApp for DomainFi, built on Doma Protocol for transparent price discovery with configurable decay curves.
 
-## Stack
+## Features
 
-- Next.js (App Router) + TypeScript + TailwindCSS
-- Ethers v6 for MetaMask wallet connect
-- Doma integration stubs:
-  - Subgraph (configurable endpoint)
-  - Orderbook SDK stub call for listings
-  - Settlement relayer stub (to be triggered by Poll API)
+- **Full Auction Lifecycle**: List (activate), Commit, Reveal, Settle with real-time sync across tabs.
+- **Configurable Decay Curves**: Linear, Exponential, Sigmoid for seller-optimized pricing.
+- **Trio Comparison**: One-click creation of three auctions with identical timing but different curves to visualize divergence.
+- **Live Event Feed**: Real-time stream of auction events (BID_COMMIT, BID_REVEAL, etc.) via Socket.IO.
+- **BigInt-Safe**: All routes handle Ethereum values without serialization errors.
+- **Responsive UI**: Toasts for actions, bids/events display, quick time presets.
 
-## Quick start
+## Quick Start
 
-1) Clone repo and install deps
+1. Clone: `git clone https://github.com/RichWangombe/autolist-doma.git`
+2. Install: `npm install`
+3. Run: `npx next dev -p 4000`
+4. Open: `http://localhost:4000/auctions` in two tabs for multi-tab sync.
 
-```bash
-npm install
-# or: pnpm install / yarn install
-```
+## Demo Script (90 seconds)
 
-2) Configure environment
+1. **Activate an Auction (10s)**:
+   - In Tab A, create a draft with reserve `0.01 ETH`, start/end times.
+   - Click “List (activate)”.
+   - Both tabs update to ACTIVE instantly.
 
-Copy `.env.local.example` to `.env.local` and set your endpoints:
+2. **Commit a Bid (20s)**:
+   - In Tab A, expand “Commit”.
+   - Fill bidder `0xAbC000000000000000000000000000000000AbC0`, amount `0.02`.
+   - Click Commit.
+   - Toast “Bid committed”; bids count increments; last event shows BID_COMMIT.
 
-```bash
-cp .env.local.example .env.local
-# Edit .env.local and set NEXT_PUBLIC_DOMA_SUBGRAPH_URL
-```
+3. **Reveal the Bid (20s)**:
+   - Expand “Reveal”, fill bidder same as above, proof `test-proof-1`.
+   - Click Reveal.
+   - Toast “Bid revealed”; last event updates to BID_REVEAL.
 
-3) Run dev server
+4. **Settle (10s)**:
+   - Expand “Settle”, optional tx `0xabc123`.
+   - Click Settle.
+   - Row flips to SETTLED in both tabs.
 
-```bash
-npm run dev
-```
+5. **Curve Comparison (30s)**:
+   - Click “Start +2m”, “End +15m”, set reserve `0.05`.
+   - Click “Create trio (compare curves)”.
+   - Watch three auctions: linear (steady drop), exponential (fast early), sigmoid (S-shaped).
 
-Visit http://localhost:3000.
+## Hackathon Track
 
-## Doma integration
+**Track 1: On-Chain Auctions & Price Discovery**
 
-- Subgraph: `lib/subgraph.ts` contains a simple GraphQL POST helper `fetchSubgraphDomains()`. Adjust the query/fields per Doma's schema.
-- Listing API stub: `app/api/listing/route.ts` shows where to integrate `@doma-protocol/orderbook-sdk` (Dutch auction w/ reserve).
-- Settlement stub: `app/api/settlement/route.ts` for a relayer to finalize auctions. Wire this to Doma Poll API/Subgraph events and use Ethers to submit txs.
+This submission innovates auction mechanisms for premium/expiring domains, enabling transparent price discovery with custom Dutch decay strategies. It reduces asymmetry for sellers/buyers by providing real-time visibility and configurable pricing levers.
 
-## Files of interest
+- **Innovation**: Trio comparison visually teaches curve impact; live event feed shows auction activity.
+- **Doma Integration**: Uses Doma SDK for listing/activation; testnet-ready for on-chain settlements.
+- **Usability**: Multi-tab sync, toasts, quick presets make demos smooth.
+- **Demo Quality**: 90s walkthrough with tangible outcomes.
 
-- UI components: `components/WalletConnect.tsx`, `components/DomainList.tsx`
-- Env config: `.env.local` (see `.env.local.example`)
-- Tailwind config: `tailwind.config.js`, `app/globals.css`
+## Doma Usage
 
-## Next steps (MVP)
+- **Integration Points**: `app/api/listing/route.ts` uses Doma hooks for activation; `lib/doma.ts` handles SDK calls.
+- **Testnet Config**: Set `NEXT_PUBLIC_DOMA_SUBGRAPH_URL` and `NEXT_PUBLIC_DOMA_SUBGRAPH_API_KEY` in `.env` for live data.
+- **On-Chain Impact**: Ready for proofs and settlements on Doma testnet; current mock subgraph for development.
+- **Future**: Add wallet connect (SIWE) and full on-chain bids/reveals.
 
-- Replace listing stub with real calls via `@doma-protocol/orderbook-sdk` (Seaport under the hood).
-- Use Doma Subgraph to filter by ownership and show actual tokenized domains.
-- Implement sealed-bid or Dutch auction params (reserve price, start/end).
-- Implement a serverless relayer using Doma Poll API to drive settlement.
-- Log and surface testnet tx hashes + subgraph links for judging.
+## Tech Stack
 
-## Notes
+- **Frontend**: Next.js (App Router), React, Tailwind CSS
+- **Backend**: Next.js API routes, Prisma + SQLite
+- **Real-Time**: Socket.IO
+- **Math**: Custom Dutch decay curves in `lib/auctionMath.ts`
+- **BigInt Handling**: `jsonSafe` wrappers for Ethereum values
 
-- This scaffold avoids adding the Orderbook SDK dependency by default so the app runs without it. Once ready, install it and replace the stub logic.
+## Project Links
+
+- **GitHub**: https://github.com/RichWangombe/autolist-doma
+- **Demo Video**: [Add YouTube/Loom link here]
+- **X/Twitter**: [Add project handle here]
+
+## License
+
+MIT
