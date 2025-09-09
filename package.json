@@ -1,0 +1,36 @@
+{
+  "name": "autolist-doma",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AutoList — Doma Protocol demo: list domains, run auctions, and settle via relayer.",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@doma-protocol/orderbook-sdk": "0.1.3",
+    "@prisma/client": "^6.15.0",
+    "ethers": "^6.13.2",
+    "next": "^14.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5",
+    "react-hot-toast": "^2.4.0"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0",
+    "@types/node": "^20.11.30",
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.21",
+    "autoprefixer": "^10.4.17",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.0",
+    "postcss": "^8.4.33",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.4.5"
+  }
+}

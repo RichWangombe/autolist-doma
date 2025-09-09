@@ -1,0 +1,62 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Auction status lifecycle
+enum AuctionStatus {
+  DRAFT
+  ACTIVE
+  SETTLED
+  CANCELLED
+}
+
+model Auction {
+  id               String        @id @default(cuid())
+  // Either tokenId or domainId should be provided
+  tokenId          String?
+  domainId         String?
+
+  reservePriceWei  BigInt
+  startsAt         DateTime?
+  endsAt           DateTime?
+  decayMode        String?
+  status           AuctionStatus @default(DRAFT)
+
+  // Optional chain info
+  txHash           String?
+
+  // Relations
+  bids             Bid[]
+  events           EventLog[]
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+model Bid {
+  id         String   @id @default(cuid())
+  auctionId  String
+  auction    Auction  @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  bidder     String   // EVM address
+  amountWei  BigInt
+  txHash     String?
+  createdAt  DateTime @default(now())
+}
+
+model EventLog {
+  id         String   @id @default(cuid())
+  auctionId  String?
+  auction    Auction? @relation(fields: [auctionId], references: [id], onDelete: SetNull)
+  type       String
+  txHash     String?
+  payload    Json?
+  createdAt  DateTime @default(now())
+}
