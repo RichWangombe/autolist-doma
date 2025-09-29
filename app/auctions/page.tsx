@@ -78,6 +78,10 @@ export default function AuctionsPage() {
   const [creatingTrio, setCreatingTrio] = useState(false)
   const [feed, setFeed] = useState<any[]>([])
   const [feedOpen, setFeedOpen] = useState(false)
+  // Phase B: watchlist and alerts
+  const [watchlist, setWatchlist] = useState<string[]>([])
+  const [alerts, setAlerts] = useState<Record<string, { price?: number; firedPrice?: boolean }>>({})
+  const [userId, setUserId] = useState<string>('')
 
   const mockBadge = useMemo(() => {
     const url = process.env.NEXT_PUBLIC_DOMA_SUBGRAPH_URL
@@ -103,10 +107,45 @@ export default function AuctionsPage() {
   // initial load
   useEffect(() => { refresh() }, [])
 
-  // socket subscription for live DB changes + live event feed
+  // Load persisted watchlist/alerts
+  useEffect(() => {
+    // userId
+    try {
+      const uid = localStorage.getItem('arcade_user_id')
+      if (uid) setUserId(uid)
+      else {
+        const gen = `u_${Math.random().toString(36).slice(2, 8)}${Date.now().toString().slice(-4)}`
+        localStorage.setItem('arcade_user_id', gen)
+        setUserId(gen)
+      }
+    } catch {}
+    try {
+      const wl = JSON.parse(localStorage.getItem('watchlist') || '[]')
+      if (Array.isArray(wl)) setWatchlist(wl)
+    } catch {}
+    try {
+      const al = JSON.parse(localStorage.getItem('alerts') || '{}')
+      if (al && typeof al === 'object') setAlerts(al)
+    } catch {}
+  }, [])
+  useEffect(() => {
+    try { localStorage.setItem('watchlist', JSON.stringify(watchlist)) } catch {}
+  }, [watchlist])
+  useEffect(() => {
+    try { localStorage.setItem('alerts', JSON.stringify(alerts)) } catch {}
+  }, [alerts])
+
+  // socket subscription for live DB changes + live event feed + celebration on settle
   useSocket((evt: any) => {
     try {
       setFeed(prev => [{ at: Date.now(), ...evt }, ...prev].slice(0, 50))
+      if (evt?.action === 'settled') {
+        try { burstConfetti() } catch {}
+      }
+      const id = evt?.auctionId || evt?.id
+      if (id && watchlist.includes(String(id))) {
+        maybeNotify('Auction update', `${evt?.action || evt?.type || 'update'} on ${String(id)}`)
+      }
     } catch {}
     refresh()
   })
@@ -306,6 +345,83 @@ export default function AuctionsPage() {
     return s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : s
   }
 
+  // Desktop notifications
+  function requestNotifPermission() {
+    if (typeof window === 'undefined' || !('Notification' in window)) return
+    if (Notification.permission === 'default') {
+      try { Notification.requestPermission().catch(()=>{}) } catch {}
+    }
+  }
+  function maybeNotify(title: string, body: string) {
+    if (typeof window === 'undefined' || !('Notification' in window)) return
+    if (Notification.permission === 'granted') {
+      try { new Notification(title, { body }) } catch {}
+    }
+  }
+
+  // Price alert: on tick, check each auction against alert threshold and notify once
+  useEffect(() => {
+    try {
+      auctions.forEach(a => {
+        const rule = alerts[a.id]
+        if (!rule?.price || rule.firedPrice) return
+        const mode: DecayMode = (a.decayMode as DecayMode) || 'linear'
+        const { priceEth } = calcDutchPrice(a.reservePriceWei, a.startsAt, a.endsAt, mode)
+        const price = Number(priceEth)
+        if (!isNaN(price) && price <= Number(rule.price)) {
+          maybeNotify('Price alert', `Auction ${short(a.id)} reached ${priceEth} ETH`)
+          addToast('success', `Price alert: ${short(a.id)} <= ${rule.price} ETH`)
+          setAlerts(prev => ({ ...prev, [a.id]: { ...(prev[a.id]||{}), firedPrice: true } }))
+        }
+      })
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, auctions])
+
+  // Simple confetti without deps: inject CSS and drop colorful squares briefly
+  function ensureConfettiCSS() {
+    if (typeof document === 'undefined') return
+    if (document.getElementById('confetti-css')) return
+    const style = document.createElement('style')
+    style.id = 'confetti-css'
+    style.innerHTML = `
+      @keyframes confetti-fall { from { transform: translateY(0) rotate(0deg); opacity: 1 } to { transform: translateY(60vh) rotate(360deg); opacity: 0 } }
+      .confetti-bit { position: fixed; width: 8px; height: 8px; will-change: transform, opacity; animation: confetti-fall 800ms linear forwards; border-radius: 1px; z-index: 50 }
+    `
+    document.head.appendChild(style)
+  }
+  function burstConfetti(x?: number, y?: number) {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return
+    ensureConfettiCSS()
+    const cx = x ?? window.innerWidth - 120
+    const cy = y ?? 100
+    const n = 24
+    for (let i = 0; i < n; i++) {
+      const el = document.createElement('span')
+      el.className = 'confetti-bit'
+      const dx = (Math.random() * 180) - 90
+      const dy = (Math.random() * 40) - 20
+      el.style.left = `${cx + dx}px`
+      el.style.top = `${cy + dy}px`
+      el.style.background = `hsl(${Math.floor(Math.random()*360)}, 90%, 60%)`
+      el.style.animationDelay = `${Math.random() * 0.2}s`
+      document.body.appendChild(el)
+      setTimeout(() => el.remove(), 1200)
+    }
+  }
+
+  async function settleExpired() {
+    try {
+      const r = await fetch('/api/auctions/settle-expired', { method: 'POST' })
+      const j = await r.json()
+      if (!j.ok) throw new Error(j.error || 'Failed to settle expired')
+      addToast('success', `Settled ${j.count} expired auctions`)
+      await refresh()
+    } catch (e: any) {
+      addToast('error', e?.message || 'Failed to settle expired')
+    }
+  }
+
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       {/* Toasts */}
@@ -359,7 +475,10 @@ export default function AuctionsPage() {
       )}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Auctions</h1>
-        <button className="btn btn-sm border px-3 py-1 rounded" onClick={refresh} disabled={loading}>Refresh</button>
+        <div className="flex items-center gap-2">
+          <button className="btn btn-sm border px-3 py-1 rounded" onClick={refresh} disabled={loading}>Refresh</button>
+          <button className="btn btn-sm border px-3 py-1 rounded" onClick={settleExpired} title="Settle all expired active auctions">Settle expired</button>
+        </div>
       </div>
       {mockBadge && (
         <div className="text-xs text-amber-700 bg-amber-100 border border-amber-200 px-2 py-1 inline-block rounded">
@@ -387,6 +506,10 @@ export default function AuctionsPage() {
           <button type="button" className="border px-2 py-1 rounded" onClick={() => setStartsAt(new Date(Date.now() + 2*60*1000).toISOString())}>Start +2m</button>
           <button type="button" className="border px-2 py-1 rounded" onClick={() => setEndsAt(new Date(Date.now() + 15*60*1000).toISOString())}>End +15m</button>
           <button type="button" className="border px-2 py-1 rounded" onClick={() => { setStartsAt(''); setEndsAt('') }}>Clear times</button>
+          <button type="button" className="border px-2 py-1 rounded text-rose-600" title="Short, high-energy round"
+            onClick={() => { setStartsAt(new Date(Date.now() + 60*1000).toISOString()); setEndsAt(new Date(Date.now() + 5*60*1000).toISOString()) }}>
+            Blitz 5m
+          </button>
         </div>
         <div>
           <button className="border px-3 py-1 rounded" type="submit" disabled={loading}>Create</button>
@@ -396,6 +519,9 @@ export default function AuctionsPage() {
         </div>
       </form>
 
+      {/* Lightweight Arcade Leaderboard */}
+      <ArcadeLeaderboard auctions={auctions} />
+
       <div className="space-y-2">
         <div className="text-sm font-medium">Existing auctions</div>
         {auctions.length === 0 && <div className="text-sm text-gray-500">None yet</div>}
@@ -403,13 +529,27 @@ export default function AuctionsPage() {
           {auctions.map(a => (
             <li key={a.id} className="border rounded p-3">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-mono hover:underline text-indigo-600"><Link href={`/auctions/${a.id}`}>{a.id}</Link></div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    title={watchlist.includes(a.id) ? 'Unwatch' : 'Watch'}
+                    className={`text-lg leading-none ${watchlist.includes(a.id) ? 'text-yellow-500' : 'text-gray-300'} hover:text-yellow-500`}
+                    onClick={() => { requestNotifPermission(); setWatchlist(prev => prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id]) }}
+                  >{watchlist.includes(a.id) ? '★' : '☆'}</button>
+                  <div className="text-sm font-mono hover:underline text-indigo-600"><Link href={`/auctions/${a.id}`}>{a.id}</Link></div>
+                </div>
                 <div className="text-xs uppercase tracking-wide text-gray-600">{a.status}</div>
               </div>
               <div className="text-sm text-gray-700">
                 {(a.tokenId && <span>tokenId: {a.tokenId} </span>) || null}
                 {(a.domainId && <span>domainId: {a.domainId} </span>) || null}
                 <span>reserve: {weiToEth(a.reservePriceWei)} ETH </span>
+                {/* Curve badge */}
+                {(() => {
+                  const mode: DecayMode = (a.decayMode as DecayMode) || 'linear'
+                  const color = mode === 'linear' ? 'bg-gray-200 text-gray-800' : mode === 'exponential' ? 'bg-indigo-200 text-indigo-800' : 'bg-emerald-200 text-emerald-800'
+                  return <span className={`ml-1 text-[10px] px-1 py-0.5 rounded ${color}`}>curve: {mode}</span>
+                })()}
                 {a.startsAt && a.endsAt && (
                   <span className="ml-2 text-xs text-gray-500">{(() => {
                     const mode: DecayMode = (a.decayMode as DecayMode) || 'linear'
@@ -417,7 +557,25 @@ export default function AuctionsPage() {
                     return `current≈ ${priceEth} ETH`
                   })()}</span>
                 )}
-                              {a.endsAt && <Countdown endsAt={a.endsAt} />}
+                {a.endsAt && <Countdown endsAt={a.endsAt} />}
+                {/* Expired badge */}
+                {a.endsAt && Date.now() >= new Date(a.endsAt).getTime() && (
+                  <span className="ml-2 text-[10px] px-1 py-0.5 rounded bg-rose-200 text-rose-900">Expired</span>
+                )}
+                {/* Fee breakdown (from last FEE_CAPTURED) */}
+                {(() => {
+                  const feeEvents = (a.events || []).filter(e => e.type === 'FEE_CAPTURED')
+                  if (feeEvents.length === 0) return null
+                  const last = feeEvents[feeEvents.length - 1] as any
+                  const feeWei = last?.payload?.feeWei
+                  const poolWei = last?.payload?.poolWei
+                  if (!feeWei && !poolWei) return null
+                  const fee = feeWei ? weiToEth(feeWei, 6) : '0'
+                  const pool = poolWei ? weiToEth(poolWei, 6) : '0'
+                  return (
+                    <span className="ml-2 text-[11px] text-gray-500">fee: {fee} ETH • pool: {pool} ETH</span>
+                  )
+                })()}
                 {/* Bids / last event inline */}
                 <span className="ml-2 text-xs text-gray-600">bids: {a.bids?.length ?? 0}</span>
                 {a.events && a.events.length > 0 && (
@@ -438,14 +596,59 @@ export default function AuctionsPage() {
                 >
                   List (activate)
                 </button>
+                {/* Predict (price/time) */}
+                {a.status === 'ACTIVE' && (
+                  <details className="border rounded px-2 py-1 text-xs">
+                    <summary>Predict</summary>
+                    <PredictWidget userId={userId} onSubmit={async (payload) => {
+                      try {
+                        const r = await fetch(`/api/auctions/${a.id}/predict`, {
+                          method: 'POST', headers: { 'content-type': 'application/json' },
+                          body: JSON.stringify({ userId, ...payload })
+                        })
+                        const j = await r.json()
+                        if (!j.ok) throw new Error(j.error || 'Predict failed')
+                        addToast('success', 'Prediction submitted')
+                        await refresh()
+                      } catch (e: any) {
+                        addToast('error', e?.message || 'Predict failed')
+                      }
+                    }} />
+                  </details>
+                )}
+                {/* Alerts (price threshold) */}
                 <details className="border rounded px-2 py-1 text-xs">
-                  <summary>Commit</summary>
-                  <CommitWidget onSubmit={(bidder, amount) => commitBid(a, bidder, amount)} />
+                  <summary>Alerts</summary>
+                  <form className="mt-2 flex items-center gap-2" onSubmit={e => { e.preventDefault() }}>
+                    <label className="text-[11px] text-gray-600">price ≤</label>
+                    <input
+                      className="border rounded px-2 py-1 text-xs w-24"
+                      placeholder="0.02"
+                      value={alerts[a.id]?.price ?? ''}
+                      onChange={e => {
+                        const v = e.target.value
+                        setAlerts(prev => ({ ...prev, [a.id]: { ...(prev[a.id]||{}), price: v ? Number(v) : undefined, firedPrice: false } }))
+                      }}
+                    />
+                    <span className="text-[11px] text-gray-600">ETH</span>
+                  </form>
                 </details>
-                <details className="border rounded px-2 py-1 text-xs">
-                  <summary>Reveal</summary>
-                  <RevealWidget onSubmit={(bidder, proof) => revealBid(a, bidder, proof)} />
-                </details>
+
+                {/* Hide Commit/Reveal if expired */}
+                {(!a.endsAt || Date.now() < new Date(a.endsAt).getTime()) ? (
+                  <>
+                    <details className="border rounded px-2 py-1 text-xs">
+                      <summary>Commit</summary>
+                      <CommitWidget onSubmit={(bidder, amount) => commitBid(a, bidder, amount)} />
+                    </details>
+                    <details className="border rounded px-2 py-1 text-xs">
+                      <summary>Reveal</summary>
+                      <RevealWidget onSubmit={(bidder, proof) => revealBid(a, bidder, proof)} />
+                    </details>
+                  </>
+                ) : (
+                  <div className="text-[11px] text-rose-700 border rounded px-2 py-1 bg-rose-50">Expired — please settle</div>
+                )}
                 <details className="border rounded px-2 py-1 text-xs">
                   <summary>Settle</summary>
                   <SettleWidget onSubmit={(tx) => settleAuction(a, tx)} />
@@ -511,5 +714,107 @@ function SettleWidget({ onSubmit }: { onSubmit: (txHash?: string) => Promise<voi
       <input className="border rounded px-2 py-1 text-xs" placeholder="txHash (optional)" value={tx} onChange={e => setTx(e.target.value)} />
       <button disabled={busy} className="border rounded px-2 py-1 text-xs" type="submit">Settle</button>
     </form>
+  )
+}
+
+function PredictWidget({ userId, onSubmit }: { userId: string; onSubmit: (payload: { priceEth?: number; time?: string }) => Promise<void> }) {
+  const [price, setPrice] = useState<string>('')
+  const [time, setTime] = useState<string>('')
+  const [busy, setBusy] = useState(false)
+  return (
+    <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={async e => { e.preventDefault(); setBusy(true); try { await onSubmit({ priceEth: price ? Number(price) : undefined, time: time || undefined }); } finally { setBusy(false) } }}>
+      <span className="text-[11px] text-gray-600">you:</span>
+      <code className="text-[11px] bg-gray-100 px-1 rounded">{userId || 'anon'}</code>
+      <label className="text-[11px] text-gray-600">price</label>
+      <input className="border rounded px-2 py-1 text-xs w-24" placeholder="0.03" value={price} onChange={e => setPrice(e.target.value)} />
+      <span className="text-[11px] text-gray-600">ETH</span>
+      <label className="text-[11px] text-gray-600">time</label>
+      <input className="border rounded px-2 py-1 text-xs w-44" placeholder="YYYY-MM-DDTHH:mm:ssZ" value={time} onChange={e => setTime(e.target.value)} />
+      <button disabled={busy} className="border rounded px-2 py-1 text-xs" type="submit">Submit</button>
+    </form>
+  )
+}
+
+// Lightweight leaderboard widget — top bidders and most bid-on auctions
+function ArcadeLeaderboard({ auctions }: { auctions: Auction[] }) {
+  const stats = useMemo(() => {
+    const bidderCount: Record<string, number> = {}
+    let topAuctions: { id: string; bids: number; endsAt?: string | null }[] = []
+    // Forecaster scores
+    const forecaster: Record<string, number> = {}
+    for (const a of auctions) {
+      const n = a.bids?.length || 0
+      topAuctions.push({ id: a.id, bids: n, endsAt: a.endsAt })
+      for (const b of a.bids || []) {
+        const key = (b.bidder || '').toLowerCase()
+        if (!key) continue
+        bidderCount[key] = (bidderCount[key] || 0) + 1
+      }
+      for (const ev of a.events || []) {
+        if (ev.type === 'PREDICTION_SCORED') {
+          const uid = (ev as any).payload?.userId || 'anon'
+          const sc = Number((ev as any).payload?.score ?? 0)
+          if (!Number.isNaN(sc)) forecaster[uid] = (forecaster[uid] || 0) + sc
+        }
+      }
+    }
+    const topBidders = Object.entries(bidderCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+    topAuctions = topAuctions.sort((a, b) => b.bids - a.bids).slice(0, 5)
+    const now = Date.now()
+    const expSoon = auctions
+      .filter(a => a.status === 'ACTIVE' && a.endsAt && new Date(a.endsAt).getTime() > now)
+      .sort((a, b) => new Date(a.endsAt as string).getTime() - new Date(b.endsAt as string).getTime())
+      .slice(0, 3)
+    const topForecasters = Object.entries(forecaster)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+    return { topBidders, topAuctions, expSoon, topForecasters }
+  }, [auctions])
+
+  if (auctions.length === 0) return null
+  return (
+    <div className="border rounded p-3">
+      <div className="text-sm font-medium mb-2">Arcade Leaderboard</div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+        <div>
+          <div className="font-semibold mb-1">Top bidders</div>
+          <ul className="space-y-1">
+            {stats.topBidders.length === 0 && <li className="text-gray-500">No bids yet</li>}
+            {stats.topBidders.map(([addr, count], i) => (
+              <li key={addr} className="text-gray-700">#{i+1} {addr.slice(0,6)}…{addr.slice(-4)} · {count}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <div className="font-semibold mb-1">Most bid-on</div>
+          <ul className="space-y-1">
+            {stats.topAuctions.length === 0 && <li className="text-gray-500">No auctions yet</li>}
+            {stats.topAuctions.map(a => (
+              <li key={a.id} className="text-gray-700">{a.id.slice(0,6)}…{a.id.slice(-4)} · bids {a.bids}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <div className="font-semibold mb-1">Expiring soon</div>
+          <ul className="space-y-1">
+            {stats.expSoon.length === 0 && <li className="text-gray-500">None</li>}
+            {stats.expSoon.map(a => (
+              <li key={a.id} className="text-gray-700">{a.id.slice(0,6)}…{a.id.slice(-4)} · ends {new Date(a.endsAt as string).toLocaleTimeString()}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <div className="font-semibold mb-1">Top forecasters</div>
+          <ul className="space-y-1">
+            {stats.topForecasters.length === 0 && <li className="text-gray-500">No predictions yet</li>}
+            {stats.topForecasters.map(([uid, score], i) => (
+              <li key={uid} className="text-gray-700">#{i+1} {uid} · {Math.round(Number(score))} pts</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
   )
 }

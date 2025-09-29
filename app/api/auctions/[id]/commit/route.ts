@@ -58,6 +58,35 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       globalThis.io.emit('auction_update', { id: auctionId, type: 'BID_COMMIT', bidder, amountEth: amountEthStr })
     }
 
+    // Anti-snipe extension: if commit occurs in the last WINDOW minutes before endsAt, extend by EXT minutes
+    try {
+      const ANTI_SNIPE_WINDOW_MIN = Number(process.env.ANTI_SNIPE_WINDOW_MIN || 2) // minutes
+      const ANTI_SNIPE_EXTENSION_MIN = Number(process.env.ANTI_SNIPE_EXTENSION_MIN || 2) // minutes
+      if (auction.endsAt) {
+        const now = Date.now()
+        const endsAtMs = new Date(auction.endsAt as any).getTime()
+        const windowMs = ANTI_SNIPE_WINDOW_MIN * 60 * 1000
+        if (now < endsAtMs && endsAtMs - now <= windowMs) {
+          const newEndsAt = new Date(endsAtMs + ANTI_SNIPE_EXTENSION_MIN * 60 * 1000)
+          const updated = await prisma.auction.update({
+            where: { id: auctionId },
+            data: {
+              endsAt: newEndsAt,
+              events: {
+                create: {
+                  type: 'AUCTION_EXTENDED',
+                  payload: { prevEndsAt: auction.endsAt, newEndsAt, reason: 'ANTI_SNIPE' },
+                },
+              },
+            },
+          })
+          try {
+            ;(globalThis as any).io?.emit('auction_update', { auctionId, action: 'anti_snipe_extend', endsAt: updated.endsAt })
+          } catch {}
+        }
+      }
+    } catch {}
+
     return NextResponse.json(jsonSafe({ ok: true, bid }))
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? 'unknown error' }, { status: 500 })
